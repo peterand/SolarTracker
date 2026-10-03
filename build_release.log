@@ -1,0 +1,67 @@
+------ Rebuild All started: Project: SolarTracker, Configuration: Release AVR ------
+Build started.
+Project "SolarTracker.cproj" (Clean target(s)):
+Target "Clean" in file "C:\Program Files (x86)\Atmel\Studio\7.0\Vs\Compiler.targets" from project "C:\Users\peter\Documents\Atmel Studio\7.0\SolarTracker\SolarTracker\SolarTracker.cproj" (entry point):
+	Using "RunCompilerTask" task from assembly "C:\Program Files (x86)\Atmel\Studio\7.0\Extensions\Application\AvrGCC.dll".
+	Task "RunCompilerTask"
+		Shell Utils Path C:\Program Files (x86)\Atmel\Studio\7.0\shellUtils
+		C:\Program Files (x86)\Atmel\Studio\7.0\shellUtils\make.exe clean 
+		rm -rf  main.o nmea.o oled_files.o twimaster.o   
+		rm -rf  main.d nmea.d oled_files.d twimaster.d   
+		rm -rf "SolarTracker.elf" "SolarTracker.a" "SolarTracker.hex" "SolarTracker.lss" "SolarTracker.eep" "SolarTracker.map" "SolarTracker.srec" "SolarTracker.usersignatures"
+	Done executing task "RunCompilerTask".
+Done building target "Clean" in project "SolarTracker.cproj".
+Done building project "SolarTracker.cproj".
+
+Build succeeded.
+------ Rebuild All started: Project: SolarTracker, Configuration: Release AVR ------
+Build started.
+Project "SolarTracker.cproj" (default targets):
+Target "PreBuildEvent" skipped, due to false condition; ('$(PreBuildEvent)'!='') was evaluated as (''!='').
+Target "CoreBuild" in file "C:\Program Files (x86)\Atmel\Studio\7.0\Vs\Compiler.targets" from project "C:\Users\peter\Documents\Atmel Studio\7.0\SolarTracker\SolarTracker\SolarTracker.cproj" (target "Build" depends on it):
+	Task "RunCompilerTask"
+		Shell Utils Path C:\Program Files (x86)\Atmel\Studio\7.0\shellUtils
+		C:\Program Files (x86)\Atmel\Studio\7.0\shellUtils\make.exe all --jobs 8 --output-sync 
+		Building file: .././main.c
+		Invoking: AVR/GNU C Compiler : 5.4.0
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-gcc.exe"  -x c -funsigned-char -funsigned-bitfields -DNDEBUG -DF_CPU=16000000UL  -I"C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\include"  -Os -ffunction-sections -fdata-sections -fpack-struct -fshort-enums -Wall -mmcu=atmega328p -B "C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\gcc\dev\atmega328p" -c -std=gnu99 -MD -MP -MF "main.d" -MT"main.d" -MT"main.o"   -o "main.o" ".././main.c" 
+		Finished building: .././main.c
+		Building file: .././nmea.c
+		Invoking: AVR/GNU C Compiler : 5.4.0
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-gcc.exe"  -x c -funsigned-char -funsigned-bitfields -DNDEBUG -DF_CPU=16000000UL  -I"C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\include"  -Os -ffunction-sections -fdata-sections -fpack-struct -fshort-enums -Wall -mmcu=atmega328p -B "C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\gcc\dev\atmega328p" -c -std=gnu99 -MD -MP -MF "nmea.d" -MT"nmea.d" -MT"nmea.o"   -o "nmea.o" ".././nmea.c" 
+		Finished building: .././nmea.c
+		Building file: .././twimaster.c
+		Invoking: AVR/GNU C Compiler : 5.4.0
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-gcc.exe"  -x c -funsigned-char -funsigned-bitfields -DNDEBUG -DF_CPU=16000000UL  -I"C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\include"  -Os -ffunction-sections -fdata-sections -fpack-struct -fshort-enums -Wall -mmcu=atmega328p -B "C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\gcc\dev\atmega328p" -c -std=gnu99 -MD -MP -MF "twimaster.d" -MT"twimaster.d" -MT"twimaster.o"   -o "twimaster.o" ".././twimaster.c" 
+		Finished building: .././twimaster.c
+		Building file: .././oled_files.c
+		Invoking: AVR/GNU C Compiler : 5.4.0
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-gcc.exe"  -x c -funsigned-char -funsigned-bitfields -DNDEBUG -DF_CPU=16000000UL  -I"C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\include"  -Os -ffunction-sections -fdata-sections -fpack-struct -fshort-enums -Wall -mmcu=atmega328p -B "C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\gcc\dev\atmega328p" -c -std=gnu99 -MD -MP -MF "oled_files.d" -MT"oled_files.d" -MT"oled_files.o"   -o "oled_files.o" ".././oled_files.c" 
+		Finished building: .././oled_files.c
+		Building target: SolarTracker.elf
+		Invoking: AVR/GNU Linker : 5.4.0
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-gcc.exe" -o SolarTracker.elf  main.o nmea.o oled_files.o twimaster.o   -Wl,-Map="SolarTracker.map" -Wl,--start-group -Wl,-lm  -Wl,--end-group -Wl,--gc-sections -mmcu=atmega328p -B "C:\Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.6.364\gcc\dev\atmega328p"  
+		Finished building target: SolarTracker.elf
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-objcopy.exe" -O ihex -R .eeprom -R .fuse -R .lock -R .signature -R .user_signatures  "SolarTracker.elf" "SolarTracker.hex"
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-objcopy.exe" -j .eeprom  --set-section-flags=.eeprom=alloc,load --change-section-lma .eeprom=0  --no-change-warnings -O ihex "SolarTracker.elf" "SolarTracker.eep" || exit 0
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-objdump.exe" -h -S "SolarTracker.elf" > "SolarTracker.lss"
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-objcopy.exe" -O srec -R .eeprom -R .fuse -R .lock -R .signature -R .user_signatures "SolarTracker.elf" "SolarTracker.srec"
+		"C:\Program Files (x86)\Atmel\Studio\7.0\toolchain\avr8\avr8-gnu-toolchain\bin\avr-size.exe" "SolarTracker.elf"
+		   text	   data	    bss	    dec	    hex	filename
+		   9482	    182	    696	  10360	   2878	SolarTracker.elf
+	Done executing task "RunCompilerTask".
+	Using "RunOutputFileVerifyTask" task from assembly "C:\Program Files (x86)\Atmel\Studio\7.0\Extensions\Application\AvrGCC.dll".
+	Task "RunOutputFileVerifyTask"
+				Program Memory Usage 	:	9664 bytes   29.5 % Full
+				Data Memory Usage 		:	878 bytes   42.9 % Full
+				Warning: Memory Usage estimation may not be accurate if there are sections other than .text sections in ELF file
+	Done executing task "RunOutputFileVerifyTask".
+Done building target "CoreBuild" in project "SolarTracker.cproj".
+Target "PostBuildEvent" skipped, due to false condition; ('$(PostBuildEvent)' != '') was evaluated as ('' != '').
+Target "Build" in file "C:\Program Files (x86)\Atmel\Studio\7.0\Vs\Avr.common.targets" from project "C:\Users\peter\Documents\Atmel Studio\7.0\SolarTracker\SolarTracker\SolarTracker.cproj" (entry point):
+Done building target "Build" in project "SolarTracker.cproj".
+Done building project "SolarTracker.cproj".
+
+Build succeeded.
+========== Rebuild All: 1 succeeded, 0 failed, 0 skipped ==========
+

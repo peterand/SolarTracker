@@ -1,0 +1,17 @@
+# Build output
+Debug/
+Release/
+*.o
+*.d
+*.elf
+*.hex
+*.eep
+*.map
+*.lss
+*.srec
+
+# User/IDE files
+.vs/
+*.atsuo
+*.suo
+*.user
