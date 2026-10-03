@@ -109,6 +109,27 @@ drive (uint8_t expected_status, bool cw)	/* cw = go_west, !cw = go_east */
 	}
 }
 
+/* The end stop is checked by level as well as by edge: an edge is missed if the carriage was
+ * stopped by a revolution pulse while already on the stop. Returns true if the stop was reached. */
+static bool
+end_stop_reached (uint8_t from)
+{
+	bool reached = false;
+	if ((PIND & _BV(PD4)) == 0)
+	{
+		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+		{
+			if (track_status == from)
+			{
+				stop_rotation();
+				track_status = end_stop;
+				reached = true;
+			}
+		}
+	}
+	return reached;
+}
+
 /* Change track_status from one state to another, unless an ISR changed it in the meantime */
 static bool
 status_change (uint8_t from, uint8_t to)
@@ -171,12 +192,16 @@ ISR( TIMER2_COMPA_vect )
 	}
 }
 
+/* The south sensor and the end stop only mean something while the carriage is moving. A noise
+ * pulse on those inputs while it stands still (most of the time) used to restart the homing /
+ * positioning sequence, which drove the tracker west on its own. */
 ISR(INT1_vect)
 {
-//	OCR1A = 0;
-//	OCR1B = 0;
-	stop_rotation();
-	track_status = pointing_south;
+	if (OCR1A || OCR1B)
+	{
+		stop_rotation();
+		track_status = pointing_south;
+	}
 }
 
 ISR(INT0_vect)
@@ -193,10 +218,8 @@ ISR(INT0_vect)
 
 ISR(PCINT2_vect)
 {
-	if ((PIND & 0x10) == 0)
+	if ((PIND & 0x10) == 0 && OCR1B)	/* low and moving east (OCR1B is the east drive) */
 	{
-//		OCR1A = 0;
-//		OCR1B = 0;
 		stop_rotation();
 		track_status = end_stop;	
 	}
@@ -477,7 +500,7 @@ void prio3_task(void)
 		break;
 
 		case go_east:
-		drive(go_east, false);
+		if (!end_stop_reached(go_east)) drive(go_east, false);
 		break;
 		
 		case pointing_south:
@@ -526,7 +549,7 @@ void prio3_task(void)
 		}
 		else if (go_dir == east)  //g_gear = g_reverse
 		{
-			drive(prep_tracking, false);
+			if (!end_stop_reached(prep_tracking)) drive(prep_tracking, false);
 		}
 		else if (go_dir == west)  //g_gear = g_forw
 		{
