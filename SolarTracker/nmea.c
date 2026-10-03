@@ -40,14 +40,27 @@
 #include <stdbool.h>
 #include <math.h>
 #include <avr/interrupt.h>
+#include <string.h>
 #include "defines.h"
 
-		uint16_t day_number_1980(uint16_t yyyy, uint16_t mm, uint16_t dd);
-		void date_1980(uint16_t days, uint16_t *year, uint16_t *month, uint16_t *day);
-		void gprmc2int(char gprmc[], uint16_t *year, uint16_t *month, uint16_t *day);
-		char *int2gprmc(uint16_t year, uint16_t month, uint16_t day);
+char nmea_buffer[256];
+volatile bool new_nmea;
 
+bool	m_bFlagRead, m_bFlagDataReady;
+char	tmp_words[20][15], tmp_szChecksum[15];
+bool	m_bFlagComputedCks;
+int		m_nChecksum;
+bool	m_bFlagReceivedCks;
+int		index_received_checksum;
+int		m_nWordIdx, m_nPrevIdx, m_nNowIdx;
+float	res_fLongitude, res_fLatitude;
+unsigned char res_nUTCHour, res_nUTCMin, res_nUTCSec,
+		res_nUTCDay, res_nUTCMonth, res_nUTCYear;
 
+static uint16_t day_number_1980(uint16_t yyyy, uint16_t mm, uint16_t dd);
+static void date_1980(uint16_t days, uint16_t *year, uint16_t *month, uint16_t *day);
+
+/* Buffers $GPRMC / $GNRMC (any talker ID); other sentences are dropped, as is everything while one waits to be parsed */
 ISR(USART_RX_vect)
 {
 	static uint8_t buff_pos = 0;
@@ -62,19 +75,8 @@ ISR(USART_RX_vect)
 		nmea_buffer[buff_pos++] = c;
 		if (c == '\n')
 		{
-			if (nmea_buffer[1] == 'G')
-			{
-				if(nmea_buffer[2] == 'P')
-				{
-					if(nmea_buffer[3] == 'R')
-					{
-						if (nmea_buffer[4] == 'M')
-						{
-							if(nmea_buffer[5] == 'C') new_nmea = true;
-						}
-					}
-				}
-			}
+			if (nmea_buffer[1] == 'G' && nmea_buffer[3] == 'R' && nmea_buffer[4] == 'M' && nmea_buffer[5] == 'C')
+				new_nmea = true;
 		}
 	}
 }
@@ -101,16 +103,7 @@ int fusedata(char c) {
 		index_received_checksum = 0;
 		// word cutting variables
 		m_nWordIdx = 0; m_nPrevIdx = 0; m_nNowIdx = 0;
-		for (int i = 0; i<20; i++)
-		{
-			for (int j=0; j<15; j++)
-			{
-//				loop_until_bit_is_set(UCSR0A, UDRE0);
-//				UDR0 = tmp_words[i][j];
-				tmp_words[i][j] = 0;
-			}
-		}
-
+		memset(tmp_words, 0, sizeof(tmp_words));
 	}
 	
 	if (m_bFlagRead) {
@@ -157,171 +150,68 @@ int fusedata(char c) {
 /*
  * parse internal tmp_ structures, fused by pushdata, and set the data flag when done
  */
-void parsedata() {
-	int received_cks = 16*digit2dec(tmp_szChecksum[0]) + digit2dec(tmp_szChecksum[1]);
-	//uart1.Send("seq: [cc:%X][words:%d][rc:%s:%d]\r\n", m_nChecksum,m_nWordIdx, tmp_szChecksum, received_cks);
-	// check checksum, and return if invalid!
-	//printf("m_nChecksum %d, received_cks %d\n", m_nChecksum, received_cks);
-
+void parsedata(void) {
 #if !IGNORE_CHECKSUM
-	if (m_nChecksum != received_cks) {
-//		printf("m_nChecksum %d, received_cks %d\n", m_nChecksum, received_cks);
-		//m_bFlagDataReady = false;
-		return;
-	}
-
-#endif	
+	int received_cks = 16*digit2dec(tmp_szChecksum[0]) + digit2dec(tmp_szChecksum[1]);
+	// check checksum, and return if invalid!
+	if (m_nChecksum != received_cks) return;
+#endif
 	/* $GPRMC
-	 * note: a siRF chipset will not support magnetic headers.
 	 * $GPRMC,hhmmss.ss,A,llll.ll,a,yyyyy.yy,a,x.x,x.x,ddmmyy,x.x,a*hh
-	 * ex: $GPRMC,230558.501,A,4543.8901,N,02112.7219,E,1.50 ,181.47,230213,,,A*66,
-		   $GPRMC,195717    ,V,6008.4132,N,02426.6929,E,002.4,329.6 ,180118,,,N*61<\r><\n>
-
+	 * ex: $GPRMC,230558.501,A,4543.8901,N,02112.7219,E,1.50 ,181.47,230213,,,A*66
 	 *
 	 * WORDS:
 	 *  1	 = UTC of position fix
-	 *  2    = Data status (V=navigation receiver warning)
-	 *  3    = Latitude of fix
+	 *  2    = Data status (A=valid, V=navigation receiver warning)
+	 *  3    = Latitude of fix (ddmm.mmmm)
 	 *  4    = N or S
-	 *  5    = Longitude of fix
+	 *  5    = Longitude of fix (dddmm.mmmm)
 	 *  6    = E or W
-	 *  7    = Speed over ground in knots
-	 *  8    = Track made good in degrees True, Bearing This indicates the direction that the device is currently moving in, 
-	 *       from 0 to 360, measured in �azimuth�.
-	 *  9    = UT date
-	 *  10   = Magnetic variation degrees (Easterly var. subtracts from true course)
-	 *  11   = E or W
-	 *  12   = Checksum
+	 *  9    = UT date (ddmmyy)
 	 */
-//	if (mstrcmp(tmp_words[0], "$GPRMC") == 0) {
-		// Check data status: A-ok, V-invalid
-/*
-		if (tmp_words[2][0] == 'V') {
-			// clear data
-			res_fLatitude = 0;
-			res_fLongitude = 0;
-			res_nUTCHour = digit2dec(tmp_words[1][0]) * 10 + digit2dec(tmp_words[1][1]);
-			res_nUTCMin = digit2dec(tmp_words[1][2]) * 10 + digit2dec(tmp_words[1][3]);
-			res_nUTCSec = digit2dec(tmp_words[1][4]) * 10 + digit2dec(tmp_words[1][5]);
-			res_nUTCDay = digit2dec(tmp_words[9][0]) * 10 + digit2dec(tmp_words[9][1]);
-			res_nUTCMonth = digit2dec(tmp_words[9][2]) * 10 + digit2dec(tmp_words[9][3]);
-			res_nUTCYear = digit2dec(tmp_words[9][4]) * 10 + digit2dec(tmp_words[9][5]);
+	// parse time
+	res_nUTCHour = digit2dec(tmp_words[1][0]) * 10 + digit2dec(tmp_words[1][1]);
+	res_nUTCMin = digit2dec(tmp_words[1][2]) * 10 + digit2dec(tmp_words[1][3]);
+	res_nUTCSec = digit2dec(tmp_words[1][4]) * 10 + digit2dec(tmp_words[1][5]);
 
-			m_bFlagDataReady = true;
-			return;
-		}
-*/
-		// parse time
-		res_nUTCHour = digit2dec(tmp_words[1][0]) * 10 + digit2dec(tmp_words[1][1]);
-		res_nUTCMin = digit2dec(tmp_words[1][2]) * 10 + digit2dec(tmp_words[1][3]);
-		res_nUTCSec = digit2dec(tmp_words[1][4]) * 10 + digit2dec(tmp_words[1][5]);
-		// parse latitude and longitude in NMEA format
-		if (tmp_words[2][0] == 'A')
-		{
-			res_nLatitudeDegrees = digit2dec(tmp_words[3][0]) * 10 + digit2dec(tmp_words[3][1]);
-			res_nLongitudeDegrees = digit2dec(tmp_words[5][1]) * 10 + digit2dec(tmp_words[5][2]);
-			res_fLatitude = string2float(tmp_words[3]);
-			res_fLongitude = string2float(tmp_words[5]);
+	if (tmp_words[2][0] != 'A') return;	// no valid fix
 
-//		}
-/*
-		else
-		{ 
-			res_nLatitudeDegrees = 60;
-			res_nLongitudeDegrees = 24;
-//			res_fLatitude = 6008.0;
-//			res_fLongitude = 2426.0;
-//			return;		//unders�ker om det funkar, res_... on�digt i s� fall
-		}
-*/
-/*
-		res_fLatitude = string2float(tmp_words[3]);
-		res_fLongitude = string2float(tmp_words[5]);
+	// parse the date first, a bogus one must not mark the data ready
+	uint16_t day = digit2dec(tmp_words[9][0]) * 10 + digit2dec(tmp_words[9][1]);
+	uint16_t month = digit2dec(tmp_words[9][2]) * 10 + digit2dec(tmp_words[9][3]);
+	uint16_t year = digit2dec(tmp_words[9][4]) * 10 + digit2dec(tmp_words[9][5]);
+	if (day < 1 || day > 31 || month < 1 || month > 12) return;
+	year += (year > 79) ? 1900 : 2000;	// NMEA year number has only 2 digits
 
-		// get decimal format
-		if (tmp_words[4][0] == 'S') res_fLatitude  *= -1.0;
-		if (tmp_words[6][0] == 'W') res_fLongitude *= -1.0;
-		float degrees = trunc(res_fLatitude / 100.0f);
-		float minutes = res_fLatitude - (degrees * 100.0f);
-		res_fLatitude = degrees + minutes / 60.0f;
-		degrees = trunc(res_fLongitude / 100.0f);
-		minutes = res_fLongitude - (degrees * 100.0f);
-		res_fLongitude = degrees + minutes / 60.0f;
-		//parse speed
-		// The knot (pronounced not) is a unit of speed equal to one nautical mile (1.852 km) per hour
-		res_fSpeed = string2float(tmp_words[7]);
-		res_fSpeed *= 1.852; // convert to km/h
-		// parse bearing
-		res_fBearing = string2float(tmp_words[8]);
-*/
-		// parse UTC date
-/**/
- uint16_t year, month, day;
- // On 2019-04-07 the receiver believes current Gregorian date to be 1999-08-22 and
- // $GPRMC shows that as "220899". This needs to be adjusted to correct date "070419"
- // Note that the year number in the NMEA string has only two digits
-// char *gprmc = "060703";
- /**/
- char gprmc[7];
-	gprmc[0] = tmp_words[9][0];
-	gprmc[1] = tmp_words[9][1];
-	gprmc[2] = tmp_words[9][2];
-	gprmc[3] = tmp_words[9][3];
-	gprmc[4] = tmp_words[9][4];
-	gprmc[5] = tmp_words[9][5];
-	gprmc[6] = '\0';
-/**/
- // first, convert NMEA date to integer format (adds century to the year)
- gprmc2int(gprmc, &year, &month, &day);
-// gprmc2int(&gprmc[0], &year, &month, &day);
-//printf("%d:%d:%d\n",year,month,day);
- // calculate how many days there are since start of 1980
- uint16_t day_num = day_number_1980(year, month, day);
-//printf("day_num1: %d\n",day_num);
- // adjust date only if it is before previous GPS week number roll-over
- // which happened 2019-04-06. That is 14341 days after start of 1980
- if (day_num <= 14341)
- day_num = day_num + 1024 * 7;
-//printf("day_num2: %d\n",day_num);
+	// On 2019-04-07 the receiver believes current Gregorian date to be 1999-08-22 and
+	// $GPRMC shows that as "220899". Adjust dates before the GPS week number roll-over
+	// of 2019-04-06 (14341 days after start of 1980) by 1024 weeks.
+	uint16_t day_num = day_number_1980(year, month, day);
+	if (day_num <= 14341)
+		day_num += 1024 * 7;
+	date_1980(day_num, &year, &month, &day);
 
- // convert the day number back to integer year, month and day
- date_1980(day_num, &year, &month, &day);
-// date_1980(day_num, &res_nUTCYear, &res_nUTCMonth, &res_nUTCDay);
-//printf("date_1980 %d:%d:%d\n",year,month,day);
+	res_nUTCDay = day;
+	res_nUTCMonth = month;
+	res_nUTCYear = year % 100;
 
- // convert the year, month and day to NMEA string format (drops century from the year)
-// printf("%d-%d-%d\n",year,month,day);
- char *adjusted = int2gprmc(year, month, day);
-// printf("$GPRMC date %s adjusted to %s\n", gprmc, adjusted);		
+	// position as signed decimal degrees
+	res_fLatitude = digit2dec(tmp_words[3][0]) * 10 + digit2dec(tmp_words[3][1]) + string2float(&tmp_words[3][2]) / 60.0F;
+	if (tmp_words[4][0] == 'S') res_fLatitude = -res_fLatitude;
+	res_fLongitude = digit2dec(tmp_words[5][0]) * 100 + digit2dec(tmp_words[5][1]) * 10 + digit2dec(tmp_words[5][2]) + string2float(&tmp_words[5][3]) / 60.0F;
+	if (tmp_words[6][0] == 'W') res_fLongitude = -res_fLongitude;
 
-		tmp_words[9][0] = adjusted[0];
-		tmp_words[9][1] = adjusted[1];
-		tmp_words[9][2] = adjusted[2];
-		tmp_words[9][3] = adjusted[3];
-		tmp_words[9][4] = adjusted[4];
-		tmp_words[9][5] = adjusted[5];
-
-		res_nUTCDay = digit2dec(tmp_words[9][0]) * 10 + digit2dec(tmp_words[9][1]);
-		res_nUTCMonth = digit2dec(tmp_words[9][2]) * 10 + digit2dec(tmp_words[9][3]);
-		res_nUTCYear = digit2dec(tmp_words[9][4]) * 10 + digit2dec(tmp_words[9][5]);
-
-/*		res_nUTCDay = 19;
-		res_nUTCMonth = 1;
-		res_nUTCYear = 18;
-*/		
-		// data ready
-		m_bFlagDataReady = true;
-	}		
+	// data ready
+	m_bFlagDataReady = true;
 }
 /*
  * returns base-16 value of chars '0'-'9' and 'A'-'F';
  * does not trap invalid chars!
  */	
 int digit2dec(char digit) {
-	if ((int)(digit) >= 65) 
-		return (int)(digit) - 55;
-	else 
-		return (int)(digit) - 48;
+	if (digit >= 'a') return digit - 'a' + 10;
+	if (digit >= 'A') return digit - 'A' + 10;
+	return digit - '0';
 }
 
 /* returns base-10 value of zero-terminated string
@@ -358,13 +248,6 @@ float string2float(char* s) {
 	return decimal_part;
 }
 
-int mstrcmp(const char *s1, const char *s2)
-{
-	while((*s1 && *s2) && (*s1 == *s2))
-	s1++,s2++;
-	return *s1 - *s2;
-}
-		
 bool isdataready() {
 	return m_bFlagDataReady;
 }
@@ -396,22 +279,6 @@ float getLongitude() {
 	return res_fLongitude;
 }
 
-int getSatellites() {
-	return res_nSatellitesUsed;
-}
-
-float  getAltitude() {
-	return res_fAltitude;
-}
-
-float getSpeed() {
-	return res_fSpeed;
-}
-
-float getBearing() {
-	return res_fBearing;
-}
-
 // known day_of_year for each month:
 // Major index 0 is for non-leap years, and 1 is for leap years
 // Minor index is for month number 1 .. 12, 0 at index 0 is number of days before January
@@ -420,9 +287,9 @@ static const uint16_t month_days[2][13] = {
 	{ 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366 }
 };
 // Count the days since start of 1980
-// Counts year * 356 days + leap days + month lengths + days in month
+// Counts year * 365 days + leap days + month lengths + days in month
 // The leap days counting needs the "+ 1" because GPS year 0 (i.e. 1980) was a leap year
-uint16_t day_number_1980(uint16_t year, uint16_t month, uint16_t day)
+static uint16_t day_number_1980(uint16_t year, uint16_t month, uint16_t day)
 {
 	uint16_t gps_years = year - 1980;
 	uint16_t leap_year = (gps_years % 4 == 0) ? 1 : 0;
@@ -439,7 +306,7 @@ uint16_t day_number_1980(uint16_t year, uint16_t month, uint16_t day)
 // the guessed month is adjusted by checking the month lengths
 // - days in month is left when the month lengths are subtracted
 // - year must still be adjusted by 1980
-void date_1980(uint16_t day_number, uint16_t *year, uint16_t *month, uint16_t *day)
+static void date_1980(uint16_t day_number, uint16_t *year, uint16_t *month, uint16_t *day)
 {
 	uint16_t gps_years = ((day_number - 1) * 100UL) / 36525UL;
 	uint16_t leap_year = (gps_years % 4 == 0) ? 1 : 0;
@@ -451,32 +318,4 @@ void date_1980(uint16_t day_number, uint16_t *year, uint16_t *month, uint16_t *d
 	*day = day_of_year - month_days[leap_year][month_of_year - 1];
 	*month = month_of_year;
 	*year = 1980 + gps_years;
-}
-// Convert NMEA $GPRMC date string to integer components
-void gprmc2int(char gprmc[], uint16_t *year, uint16_t *month, uint16_t *day)
-{
-	*day = 10 * (gprmc[0] - '0') + (gprmc[1] - '0');
-	*month = 10 * (gprmc[2] - '0') + (gprmc[3] - '0');
-	*year = 10 * (gprmc[4] - '0') + (gprmc[5] - '0');
-//	assert(*year >= 0 && *year <= 99 && *month >= 1 && *month <= 12	&& *day >= 1 && *day <= 31);
-	// NMEA $GPRMC year number has only 2 digits
-	if (*year > 79)
-	*year = *year + 1900;
-	else
-	*year = *year + 2000;
-}
-// Convert integer date components to NMEA $GPRMC date string
-char *int2gprmc(uint16_t year, uint16_t month, uint16_t day)
-{
-//	assert(year >= 1980 && year <= 2079 && month >= 1 && month <= 12 && day >= 1 && day <= 31);
-	year = year % 100; // use only decades and years, drop centuries
-	static char gprmc[7];
-	gprmc[0] = '0' + (day / 10);
-	gprmc[1] = '0' + (day % 10);
-	gprmc[2] = '0' + (month / 10);
-	gprmc[3] = '0' + (month % 10);
-	gprmc[4] = '0' + (year / 10);
-	gprmc[5] = '0' + (year % 10);
-	gprmc[6] = '\0';
-	return gprmc;
 }

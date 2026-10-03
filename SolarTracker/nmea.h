@@ -37,47 +37,39 @@
     ****************************************************************************
  */
  #include <stdbool.h>
+ #include <stdint.h>
 		
-		char nmea_buffer[256];
-		volatile bool new_nmea;
+extern char nmea_buffer[256];
+extern volatile bool new_nmea;
 
-		bool			m_bFlagRead,					// flag used by the parser, when a valid sentence has begun
-						m_bFlagDataReady;				// valid GPS fix and data available, user can call reader functions
-		char			tmp_words[20][15],				//	hold parsed words for one given NMEA sentence
-						tmp_szChecksum[15];				//	hold the received checksum for one given NMEA sentence
-		
-		// will be set to true for characters between $ and * only
-		bool			m_bFlagComputedCks ;			// used to compute checksum and indicate valid checksum interval (between $ and * in a given sentence)
-		int				m_nChecksum ;					// numeric checksum, computed for a given sentence
-		bool			m_bFlagReceivedCks ;			// after getting  * we start cuttings the received checksum
-		int				index_received_checksum ;		// used to parse received checksum
-		
-		// word cutting variables
-		int				m_nWordIdx ,					// the current word in a sentence
-						m_nPrevIdx,						// last character index where we did a cut
-						m_nNowIdx ;						// current character index
-		
-		// globals to store parser results
-		float			res_fLongitude;					// GPRMC and GPGGA
-		float			res_fLatitude;					// GPRMC and GPGGA
-		unsigned char	res_nUTCHour, res_nUTCMin, res_nUTCSec,		// GPRMC and GPGGA 
-						res_nUTCDay, res_nUTCMonth, res_nUTCYear;	// GPRMC
-		int				res_nSatellitesUsed;			// GPGGA
-		float			res_fAltitude;					// GPGGA
-		float			res_fSpeed;						// GPRMC
-		float			res_fBearing;					// GPRMC
-			
-		// the parser, currently handling GPRMC and GPGGA, but easy to add any new sentences
-		void			parsedata();
-		// aux functions
-		int				digit2dec(char hexdigit);
-		float			string2float(char* s);
-		int				mstrcmp(const char *s1, const char *s2);
-		int				res_nLatitudeDegrees;
-		int				res_nLongitudeDegrees;	
-//		m_bFlagRead = false; //are we in a sentence?
-//		m_bFlagDataReady = false; //is data available?
-		
+extern bool		m_bFlagRead,					// flag used by the parser, when a valid sentence has begun
+				m_bFlagDataReady;				// valid GPS fix and data available, user can call reader functions
+extern char		tmp_words[20][15],				//	hold parsed words for one given NMEA sentence
+				tmp_szChecksum[15];				//	hold the received checksum for one given NMEA sentence
+
+// will be set to true for characters between $ and * only
+extern bool		m_bFlagComputedCks;				// used to compute checksum and indicate valid checksum interval (between $ and * in a given sentence)
+extern int		m_nChecksum;					// numeric checksum, computed for a given sentence
+extern bool		m_bFlagReceivedCks;				// after getting  * we start cuttings the received checksum
+extern int		index_received_checksum;		// used to parse received checksum
+
+// word cutting variables
+extern int		m_nWordIdx,						// the current word in a sentence
+				m_nPrevIdx,						// last character index where we did a cut
+				m_nNowIdx;						// current character index
+
+// globals to store parser results
+extern float	res_fLongitude;					// signed decimal degrees, east positive
+extern float	res_fLatitude;					// signed decimal degrees, north positive
+extern unsigned char	res_nUTCHour, res_nUTCMin, res_nUTCSec,		// GPRMC
+				res_nUTCDay, res_nUTCMonth, res_nUTCYear;			// GPRMC
+
+// the parser, currently handling GPRMC
+void			parsedata(void);
+// aux functions
+int				digit2dec(char hexdigit);
+float			string2float(char* s);
+
 		/*
 		 * The serial data is assembled on the fly, without using any redundant buffers. 
 		 * When a sentence is complete (one that starts with $, ending in EOL), all processing is done on 
@@ -100,9 +92,5 @@
 		int				getYear();
 		float			getLatitude();
 		float			getLongitude();
-		int				getSatellites();
-		float			getAltitude();
-		float			getSpeed();
-		float			getBearing();
 
 #endif /* NMEA_H_ */

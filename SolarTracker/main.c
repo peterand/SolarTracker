@@ -14,8 +14,10 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/sfr_defs.h>
+#include <util/atomic.h>
 #include <math.h>
 #include "nmea.h"
+#include "sun.h"
 #include "i2cmaster.h"
 #include "defines.h"
 #include <time.h>
@@ -31,17 +33,15 @@ void timer0_init(void);
 void init_devices(void);
 
 enum gear {g_idle, go_west, go_east, end_stop, pointing_south, prep_tracking, tracking, pointing_south_tracking, test};
-const char *status_names[] = {"g_idle", "go_west", "go_east", "end_stop", "pointing_south", "prep_tracking", "tracking", "south_tracking", "test"};
 volatile uint8_t track_status = g_idle;
 volatile uint16_t rev_count = 0;
-uint8_t test_minute = 0, test_hour = 0;
+volatile uint8_t rev_lockout = 0;	/* ms left in which further INT0 pulses are treated as contact bounce */
 
 volatile uint8_t synced = 0;
 volatile uint8_t time_s = 0;
 volatile uint8_t time_m = 0;
 volatile uint8_t time_h = 0;
 
-int gYear, gMonth, gDay;
 bool summer_time;
 
 void tasker_init(void);
@@ -82,22 +82,50 @@ stop_rotation (void)
 	OCR1B = 0;
 }
 
-static inline void
-rotate_cw (void)	/*go_west*/
+/* Start the motor, but only while track_status still equals expected_status. The sensor ISRs
+ * change track_status and stop the motor; checking and driving in one atomic step keeps a
+ * late restart from running the motor past a sensor. The 16-bit OCR1x writes also need to be
+ * atomic: they share the TEMP register with the ISRs' OCR1x writes. */
+static void
+drive (uint8_t expected_status, bool cw)	/* cw = go_west, !cw = go_east */
 {
-	OCR1B = 0;
-	OCR1A = TROTTLE;
+	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+	{
+		if (track_status == expected_status)
+		{
+			if (cw)
+			{
+				OCR1B = 0;
+				OCR1A = TROTTLE;
+			}
+			else
+			{
+				OCR1A = 0;
+				OCR1B = TROTTLE;
+			}
+		}
+	}
 }
 
-static inline void
-rotate_ccw (void)	/*go_east*/
+/* Change track_status from one state to another, unless an ISR changed it in the meantime */
+static bool
+status_change (uint8_t from, uint8_t to)
 {
-	OCR1A = 0;
-	OCR1B = TROTTLE;
+	bool changed = false;
+	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+	{
+		if (track_status == from)
+		{
+			track_status = to;
+			changed = true;
+		}
+	}
+	return changed;
 }
 
 ISR( TIMER0_COMPA_vect )
 {
+	if (rev_lockout) rev_lockout--;
 	static uint8_t tasker_ticks = 0;
 	if (++tasker_ticks == 10)
 	{
@@ -143,7 +171,11 @@ ISR(INT0_vect)
 //	OCR1A = 0;
 //	OCR1B = 0;
 	stop_rotation();
-	rev_count++;
+	if (!rev_lockout)
+	{
+		rev_count++;
+		rev_lockout = 20;
+	}
 }
 
 ISR(PCINT2_vect)
@@ -184,6 +216,10 @@ void init_devices(void)
 	EIMSK = _BV(INT0) | _BV(INT1);
 	PCICR = _BV( PCIE2);
 	PCMSK2 = _BV(PCINT20);
+
+	/* PCINT only reports changes: if the carriage starts on the end stop, no edge will ever come */
+	_delay_us(50);	/* pull-up settling */
+	if ((PIND & _BV(PD4)) == 0) track_status = end_stop;
 }
 
 void ioinit(void)
@@ -214,10 +250,8 @@ void USART_vSendByte(uint8_t u8Data)
 {
 	// Wait if a byte is being transmitted
 	while((UCSR0A&(1<<UDRE0)) == 0);
-	{
-		// Transmit data
-		UDR0 = u8Data;
-	}
+	// Transmit data
+	UDR0 = u8Data;
 }
 
 void USART_vSendStringWithNewLine(const char *str)
@@ -248,7 +282,7 @@ void timer0_init(void)
 void timer2_init(void)
 {
 	TCCR2A = _BV(WGM21);   /* CTC mode */
-	OCR2A = 250;
+	OCR2A = 249;           /* 16 MHz / 256 / (249 + 1) = 250 Hz, the ISR counts 250 of them per second */
 	TIMSK2 = _BV(OCIE2A);	/* Enable Timer/Counter2 Compare Match A interrupt */
 	TCCR2B = _BV(CS21) | _BV(CS22); /* prescaler 256, start timer */
 }
@@ -295,12 +329,12 @@ int main(void)
 	ioinit();  
 	init_devices();
 	stdout = &mystdout;
-	printf("Preparing..\n");  
+	puts_P(PSTR("Preparing.."));
 	timer0_init();
 	timer2_init();
 	startGPS();
 	sei();
-	printf("..To Start..\n");
+	puts_P(PSTR("..To Start.."));
 	
 	while(1)
 	{
@@ -336,13 +370,11 @@ void prio1_task(void)
 
 	if (new_nmea)
 	{
-		for (int i=0; i<256; i++)
+		for (uint16_t i=0; i<sizeof(nmea_buffer); i++)
 		{
 			fusedata(nmea_buffer[i]);
 			if (nmea_buffer[i] == '\n') break;
 		}
-
-		for (int i=0; i<256; i++) nmea_buffer[i] = 0;
 
 		if (isdataready())
 		{			
@@ -356,34 +388,24 @@ void prio1_task(void)
 			
 			t_utc_now = mk_gmtime (stmPtr);
 			
-			if (eu_dst(&t_utc_now,0) > 0) summer_time = true;
-//			if ((getMonth() > APRIL) && (getMonth() < NOVEMBER)) summer_time = true; 
-			else summer_time = false;
+			summer_time = (eu_dst(&t_utc_now,0) > 0);
 			
-//			gDay = stmPtr -> tm_mday;
-//			gMonth = stmPtr -> tm_mon;
-//			gYear = stmPtr -> tm_year; /* years since 1900 */
+			set_position((int32_t)(res_fLatitude * ONE_DEGREE), (int32_t)(res_fLongitude * ONE_DEGREE));
 
-//			printf("t_gmt %lu\n", (unsigned long)t_gmt_now);
+			/* days since 2000-01-01 12:00 UTC (J2000.0); the time_t epoch is 2000-01-01 00:00 */
+			float julian_day = (float)t_utc_now/ONE_DAY - 0.5F;
 			
-			int32_t lat = res_nLatitudeDegrees;
-			int32_t lon = res_nLongitudeDegrees;
-			set_position(lat * ONE_DEGREE, lon * ONE_DEGREE);
-
-			float julian_day = (float)t_utc_now/ONE_DAY;
-			
-//			printf("julian_day %.2f\n", julian_day);
-			
-			calcSunRiseSunSet(&sunRiseTime_hour, &sunRiseTime_minute, &sunSetTime_hour, &sunSetTime_minute, res_nLatitudeDegrees, res_nLongitudeDegrees, 0, julian_day+1);
+			calcSunRiseSunSet(res_fLatitude, res_fLongitude, 0, julian_day+1);
 			iSunRiseTime_tomorrow = iSunRiseTime;
-			calcSunRiseSunSet(&sunRiseTime_hour, &sunRiseTime_minute, &sunSetTime_hour, &sunSetTime_minute, res_nLatitudeDegrees, res_nLongitudeDegrees, 0, julian_day);
+			calcSunRiseSunSet(res_fLatitude, res_fLongitude, 0, julian_day);
 
-			cli();
-			time_s = getSecond();
-			time_m = getMinute();
-			time_h = getHour();
-			syncUtcNow = time_h * 60 + time_m;
-			sei();
+			ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+			{
+				time_s = getSecond();
+				time_m = getMinute();
+				time_h = getHour();
+				syncUtcNow = time_h * 60 + time_m;
+			}
 			synced = 1;
 			stopGPS();
 		}
@@ -391,11 +413,11 @@ void prio1_task(void)
 	}
 	else if (synced == 1)
 	{
-		cli();
-		syncUtcNow = time_h * 60 + time_m;
-		if ((syncUtcNow == 1) && (time_s == 1)) startGPS();			// Start GPS 1 minute past UTC midnight
-		if ((syncUtcNow % 8 == 0) && (time_s == 30)) time_s = 31;	// Adjust free running timekeeper
-		sei();
+		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+		{
+			syncUtcNow = time_h * 60 + time_m;
+			if ((syncUtcNow == 1) && (time_s == 1)) startGPS();			// Start GPS 1 minute past UTC midnight
+		}
 	}
 	
 	task_timer[PRIO_1] = 79;
@@ -405,11 +427,9 @@ void prio1_task(void)
 	static uint16_t gmt = 300;
 	gmt++;
 	if (gmt == 1441) gmt = 0;
-//	gpsUtcNow = gmt;
 	iSunRiseTime = 310;
 	iSunSetTime = 950;
 	iSolarNoon = 615;
-//	printf("iGmtNow %d\n", iGmtNow)
 	task_timer[PRIO_1] = 5;
 #endif
 }
@@ -421,52 +441,37 @@ void prio2_task(void)
 
 void prio3_task(void)
 {
-	uint16_t go_minutes = 0;
+	int16_t go_minutes = 0;
 	static uint16_t iGo_revs;
-	enum uint8_t {stay, east, west, step};
+	enum {stay, east, west};
 	static uint8_t go_dir = stay;
-	static uint16_t iPrev_Utc = 0;
-	static uint8_t old_trackstatus;
+	static int16_t iPrev_Utc = 0;
+	uint16_t revs;
 
-	if (old_trackstatus != track_status)
-	{
-//		printf("Status: %s, GMT %d, Rise %d, Noon %d, Set %d, GoRevs %d, RevCount %d, Dir %d\n", status_names[track_status], syncUtcNow, iSunRiseTime, iSolarNoon, iSunSetTime, iGo_revs, rev_count, go_dir);
-	}
-//	if ((iGmtNow % 100) == 0) printf("%d\n", iGmtNow);
-	switch (track_status)
+	uint8_t status = track_status;		/* may be changed by the sensor ISRs at any time */
+	switch (status)
 	{
 		case g_idle:
-		old_trackstatus = track_status;
-		track_status = go_east;
+		status_change(g_idle, go_east);
 		break;
 		
 		case go_west:
-		old_trackstatus = track_status;
-//		OCR1B = 0;
-//		OCR1A = TROTTLE;
-		rotate_cw();
+		drive(go_west, true);
 		break;				//Next end_stop or pointing_south from interrupts
 				
 		case end_stop:
-		old_trackstatus = track_status;
-		track_status = go_west;
+		status_change(end_stop, go_west);
 		break;
 
 		case go_east:
-		old_trackstatus = track_status;
-//		OCR1A = 0;
-//		OCR1B = TROTTLE;
-		rotate_ccw();
+		drive(go_east, false);
 		break;
 		
 		case pointing_south:
-		old_trackstatus = track_status;
-
 #if !TEST_GMT
 		if ((synced == 1) && (summer_time == true))
 #endif
 		{
-//			printf("SunRise %d Noon %d SunSet %d, Now %d\n", iSunRiseTime, iSolarNoon, iSunSetTime, iGmtNow);
 			go_minutes = 0;
 			if((syncUtcNow < iSunRiseTime) || (syncUtcNow > iSunSetTime))  //0..sunrise || sunset..24 
 			{
@@ -484,56 +489,47 @@ void prio3_task(void)
 				go_minutes = syncUtcNow - iSolarNoon;
 				go_dir = west;
 			}
-			iGo_revs = go_minutes/5;			
-			rev_count = 0;
-			if (iGo_revs) track_status = prep_tracking;
+			iGo_revs = (go_minutes > 0) ? go_minutes/5 : 0;
+			ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+			{
+				rev_count = 0;
+			}
+			if (iGo_revs) status_change(pointing_south, prep_tracking);
 		}
 		break;
 
 		case prep_tracking:
-		old_trackstatus = track_status;
-		if (rev_count >= iGo_revs)
+		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 		{
-//			OCR1A = 0;
-//			OCR1B = 0;
+			revs = rev_count;
+		}
+		if (revs >= iGo_revs)
+		{
 			iPrev_Utc = syncUtcNow;
 			if((syncUtcNow >= iSunRiseTime) && (syncUtcNow <= iSunSetTime))
 			{ 
-				track_status = tracking;
+				status_change(prep_tracking, tracking);
 			}
 		}
-
 		else if (go_dir == east)  //g_gear = g_reverse
 		{
-//			OCR1A = 0;
-//			OCR1B = TROTTLE;
-			rotate_ccw();
+			drive(prep_tracking, false);
 		}
 		else if (go_dir == west)  //g_gear = g_forw
 		{
-//			OCR1B = 0;
-//			OCR1A = TROTTLE;
-			rotate_cw();
+			drive(prep_tracking, true);
 		}
 		break;
 		
 		case tracking:
-//		printf("GmtNow: %d Go_start: %d Go_stop: %d RevCount: %d\n", iGmtNow, go_minutes_start, go_minutes_stop, rev_count);
-		old_trackstatus = track_status;
-		
 		if ((iPrev_Utc != syncUtcNow) && ((syncUtcNow % 5) == 0))
 		{
 			iPrev_Utc = syncUtcNow;
-//			OCR1B = 0;
-//			OCR1A = TROTTLE;
-			rotate_cw();
+			drive(tracking, true);
 		}
 		else if (syncUtcNow > iSunSetTime) 
 		{
-//			OCR1A = 0;
-//			OCR1B = TROTTLE;
-			track_status = go_east;
-			rotate_ccw();
+			if (status_change(tracking, go_east)) drive(go_east, false);
 		}
 		break; 
 
@@ -563,7 +559,7 @@ void prio6_task(void)
 {
 	if (synced)
 	{
-		if((syncUtcNow > (iSunSetTime - DUSK_RELAY_ON_OFFSET)) || (syncUtcNow < (iSunRiseTime + DUSK_RELAY_ON_OFFSET)) ) duskRelayOn();
+		if((syncUtcNow > (iSunSetTime - DUSK_RELAY_ON_OFFSET)) || (syncUtcNow < (iSunRiseTime + DUSK_RELAY_ON_OFFSET))) duskRelayOn();	/* int16_t: sunrise before 60 min UTC must not wrap */
 		else duskRelayOff();
 	}
 
