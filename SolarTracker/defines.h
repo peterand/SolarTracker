@@ -266,4 +266,7 @@
 #define DEMO_HYST_COUNTER 2
 
 #define DUSK_RELAY_ON_OFFSET -60
+
+/* Longest time the motor may run without reaching a sensor (INT0 revolution pulse, south sensor, end stop) */
+#define STALL_TIMEOUT_S 120
 #endif /* DEFINES_H_ */

@@ -32,9 +32,10 @@ void ioinit(void);
 void timer0_init(void);
 void init_devices(void);
 
-enum gear {g_idle, go_west, go_east, end_stop, pointing_south, prep_tracking, tracking, pointing_south_tracking, test};
+enum gear {g_idle, go_west, go_east, end_stop, pointing_south, prep_tracking, tracking, pointing_south_tracking, test, stalled};
 volatile uint8_t track_status = g_idle;
 volatile uint16_t rev_count = 0;
+volatile uint8_t stall_s = 0;		/* seconds the motor has run since the last sensor event */
 volatile uint8_t rev_lockout = 0;	/* ms left in which further INT0 pulses are treated as contact bounce */
 
 volatile uint8_t synced = 0;
@@ -80,6 +81,7 @@ stop_rotation (void)
 {
 	OCR1A = 0;
 	OCR1B = 0;
+	stall_s = 0;	/* every sensor ISR stops the motor, so this also restarts the stall timer */
 }
 
 /* Start the motor, but only while track_status still equals expected_status. The sensor ISRs
@@ -155,6 +157,17 @@ ISR( TIMER2_COMPA_vect )
 			time_h = 0;
 		}
 		ticks = 0;
+
+		/* Stall protection: the motor must reach a sensor (INT0/INT1/end stop) within STALL_TIMEOUT_S */
+		if (OCR1A || OCR1B)
+		{
+			if (++stall_s >= STALL_TIMEOUT_S)
+			{
+				stop_rotation();
+				track_status = stalled;	/* latched: nothing restarts the motor until reset or a sensor event */
+			}
+		}
+		else stall_s = 0;
 	}
 }
 
