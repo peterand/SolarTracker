@@ -156,6 +156,12 @@
     <Compile Include="i2cmaster.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="eventlog.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="eventlog.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="main.c">
       <SubType>compile</SubType>
     </Compile>

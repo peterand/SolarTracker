@@ -18,6 +18,7 @@
 #include <math.h>
 #include "nmea.h"
 #include "sun.h"
+#include "eventlog.h"
 #include "i2cmaster.h"
 #include "defines.h"
 #include <time.h>
@@ -32,10 +33,25 @@ void ioinit(void);
 void timer0_init(void);
 void init_devices(void);
 
-enum gear {g_idle, go_west, go_east, end_stop, pointing_south, prep_tracking, tracking, pointing_south_tracking, test};
+enum gear {g_idle, go_west, go_east, end_stop, pointing_south, prep_tracking, tracking, pointing_south_tracking, test, stalled};
 volatile uint8_t track_status = g_idle;
 volatile uint16_t rev_count = 0;
+volatile uint8_t stall_s = 0;		/* seconds the motor has run since the last sensor event */
 volatile uint8_t rev_lockout = 0;	/* ms left in which further INT0 pulses are treated as contact bounce */
+volatile int16_t position = 0;		/* revolutions west (+) or east (-) of the south sensor ... */
+volatile bool position_valid = false;	/* ... only known after the south sensor has been passed (not after reset / end stop) */
+
+/* Events posted by ISRs and the motor code, written to the EEPROM log by prio4_task */
+volatile uint8_t ev_pending = 0;		/* bit n set = event code n pending */
+volatile uint8_t ev_state[EV_COUNT];	/* track_status when the event was posted */
+
+uint8_t mcusr_mirror __attribute__((section(".noinit")));
+void get_mcusr(void) __attribute__((naked, used, section(".init3")));
+void get_mcusr(void)
+{
+	mcusr_mirror = MCUSR;
+	MCUSR = 0;
+}
 
 volatile uint8_t synced = 0;
 volatile uint8_t time_s = 0;
@@ -76,10 +92,27 @@ uint8_t task_timer[NUM_TASKS];
 FILE mystdout = FDEV_SETUP_STREAM(uart_putchar, NULL, _FDEV_SETUP_WRITE);
 
 static inline void
+ev_post (uint8_t code)
+{
+	ev_state[code] = track_status;
+	ev_pending |= _BV(code);
+}
+
+static inline void
 stop_rotation (void)
 {
 	OCR1A = 0;
 	OCR1B = 0;
+	stall_s = 0;	/* every sensor ISR stops the motor, so this also restarts the stall timer */
+}
+
+/* True when the carriage is known to be as far west as the sun can take it (plus a margin).
+ * Driving further west can only mean noise or a lost position, and ends at the hard end stop. */
+static bool
+west_limit_reached (void)
+{
+	return synced && position_valid &&
+	       position >= (int16_t)((iSunSetTime - iSolarNoon) / 5 + WEST_MARGIN_REVS);
 }
 
 /* Start the motor, but only while track_status still equals expected_status. The sensor ISRs
@@ -93,7 +126,12 @@ drive (uint8_t expected_status, bool cw)	/* cw = go_west, !cw = go_east */
 	{
 		if (track_status == expected_status)
 		{
-			if (cw)
+			if (cw && west_limit_reached())
+			{
+				stop_rotation();
+				ev_post(EV_WEST_LIMIT);
+			}
+			else if (cw)
 			{
 				OCR1B = 0;
 				OCR1A = TROTTLE;
@@ -105,6 +143,28 @@ drive (uint8_t expected_status, bool cw)	/* cw = go_west, !cw = go_east */
 			}
 		}
 	}
+}
+
+/* The end stop is checked by level as well as by edge: an edge is missed if the carriage was
+ * stopped by a revolution pulse while already on the stop. Returns true if the stop was reached. */
+static bool
+end_stop_reached (uint8_t from)
+{
+	bool reached = false;
+	if ((PIND & _BV(PD4)) == 0)
+	{
+		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+		{
+			if (track_status == from)
+			{
+				stop_rotation();
+				position_valid = false;
+				track_status = end_stop;
+				reached = true;
+			}
+		}
+	}
+	return reached;
 }
 
 /* Change track_status from one state to another, unless an ISR changed it in the meantime */
@@ -155,25 +215,46 @@ ISR( TIMER2_COMPA_vect )
 			time_h = 0;
 		}
 		ticks = 0;
+
+		/* Stall protection: the motor must reach a sensor (INT0/INT1/end stop) within STALL_TIMEOUT_S */
+		if (OCR1A || OCR1B)
+		{
+			if (++stall_s >= STALL_TIMEOUT_S)
+			{
+				ev_post(EV_STALL);
+				stop_rotation();
+				track_status = stalled;	/* latched: nothing restarts the motor until reset or a sensor event */
+			}
+		}
+		else stall_s = 0;
 	}
 }
 
+/* The south sensor and the end stop only mean something while the carriage is moving. A noise
+ * pulse on those inputs while it stands still (most of the time) used to restart the homing /
+ * positioning sequence, which drove the tracker west on its own. */
 ISR(INT1_vect)
 {
-//	OCR1A = 0;
-//	OCR1B = 0;
-	stop_rotation();
-	track_status = pointing_south;
+	if (OCR1A || OCR1B)
+	{
+		stop_rotation();
+		position = 0;
+		position_valid = true;
+		track_status = pointing_south;
+	}
+	else ev_post(EV_NOISE_SOUTH);
 }
 
 ISR(INT0_vect)
 {
 //	OCR1A = 0;
 //	OCR1B = 0;
+	int8_t dir = OCR1A ? 1 : (OCR1B ? -1 : 0);	/* before the motor is stopped */
 	stop_rotation();
 	if (!rev_lockout)
 	{
 		rev_count++;
+		position += dir;
 		rev_lockout = 20;
 	}
 }
@@ -182,10 +263,13 @@ ISR(PCINT2_vect)
 {
 	if ((PIND & 0x10) == 0)
 	{
-//		OCR1A = 0;
-//		OCR1B = 0;
-		stop_rotation();
-		track_status = end_stop;	
+		if (OCR1B)	/* moving east (OCR1B is the east drive) */
+		{
+			stop_rotation();
+			position_valid = false;
+			track_status = end_stop;	
+		}
+		else ev_post(EV_NOISE_ENDSTOP);
 	}
 }
 
@@ -330,6 +414,9 @@ int main(void)
 	init_devices();
 	stdout = &mystdout;
 	puts_P(PSTR("Preparing.."));
+	eventlog_init();
+	eventlog_write(EV_RESET, 0x80, 0, mcusr_mirror);
+	eventlog_dump();
 	timer0_init();
 	timer2_init();
 	startGPS();
@@ -447,6 +534,7 @@ void prio3_task(void)
 	static uint8_t go_dir = stay;
 	static int16_t iPrev_Utc = 0;
 	uint16_t revs;
+	bool west_of_south;
 
 	uint8_t status = track_status;		/* may be changed by the sensor ISRs at any time */
 	switch (status)
@@ -456,7 +544,14 @@ void prio3_task(void)
 		break;
 		
 		case go_west:
-		drive(go_west, true);
+		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+		{
+			west_of_south = position_valid && position > 0;
+		}
+		if (west_of_south)
+			status_change(go_west, go_east);	/* already west of the south sensor: approach it from the west */
+		else
+			drive(go_west, true);
 		break;				//Next end_stop or pointing_south from interrupts
 				
 		case end_stop:
@@ -464,7 +559,7 @@ void prio3_task(void)
 		break;
 
 		case go_east:
-		drive(go_east, false);
+		if (!end_stop_reached(go_east)) drive(go_east, false);
 		break;
 		
 		case pointing_south:
@@ -513,7 +608,7 @@ void prio3_task(void)
 		}
 		else if (go_dir == east)  //g_gear = g_reverse
 		{
-			drive(prep_tracking, false);
+			if (!end_stop_reached(prep_tracking)) drive(prep_tracking, false);
 		}
 		else if (go_dir == west)  //g_gear = g_forw
 		{
@@ -544,9 +639,31 @@ void prio3_task(void)
 #endif
 }
 
+/* Writes pending events to the EEPROM log (runs once a second) */
 void prio4_task(void)
 {
-task_timer[PRIO_4] = 0;
+	static uint16_t lockout[EV_COUNT];	/* seconds before the same event may be logged again */
+	uint8_t pending, hour, minute;
+
+	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+	{
+		pending = ev_pending;
+		ev_pending = 0;
+		hour = time_h;
+		minute = time_m;
+	}
+	if (!synced) hour |= 0x80;
+
+	for (uint8_t code = EV_RESET + 1; code < EV_COUNT; code++)
+	{
+		if (lockout[code]) lockout[code]--;
+		if ((pending & _BV(code)) && !lockout[code])
+		{
+			eventlog_write(code, hour, minute, ev_state[code]);
+			lockout[code] = LOG_LOCKOUT_S;
+		}
+	}
+	task_timer[PRIO_4] = 100;
 }
 
 void prio5_task(void)

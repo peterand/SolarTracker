@@ -266,4 +266,14 @@
 #define DEMO_HYST_COUNTER 2
 
 #define DUSK_RELAY_ON_OFFSET -60
+
+/* Longest time the motor may run without reaching a sensor (INT0 revolution pulse, south sensor, end stop) */
+#define STALL_TIMEOUT_S 120
+
+/* Software west limit: the tracker never needs to go further west of the south sensor than
+ * (sunset - solar noon) / 5 revolutions; this margin (in revolutions, 5 min of sun each) is allowed on top */
+#define WEST_MARGIN_REVS 6
+
+/* The same event is written to the EEPROM log at most once per this many seconds */
+#define LOG_LOCKOUT_S 600
 #endif /* DEFINES_H_ */
